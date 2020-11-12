@@ -1,36 +1,37 @@
-# Vault & Forwarded-For Support
+# Vault & HAProxy Health Checks
 
-Related to [Vault Github Issue: 9651](https://github.com/hashicorp/vault/issues/9651). Vault 1.5.0 (going as far back as 1.4.1) was tested at the time of authoring and the setup script (`5.install_vault.sh`) will attempt to install what's the latest at the time of execution. 
+A draft and mocked demo of HAProxy backend setup with API health checks for Vault with per node (fqdn / dns) based routing as well monitored (but not externally) RPC connections that are via LAN and being internal routed.
 
 **PS** - adjust resources (cpu & ram) detailed in `Vagrantfile` if things are a bit too slow.
 
 ## Makeup & Concept
 
 When launched - URLs & IPs include:
- - HAProxy via **name**: [http://vault.somewhere.local:60100/](http://vault.somewhere.local:60100/) - OR **direct** - [http://192.168.178.199:60100](http://192.168.178.199:60100)
- - Vault UI via **LB**: [http://vault.somewhere.local](http://vault.somewhere.local:60100/) - OR **direct w/o LB** [http://192.168.178.176:8200](http://192.168.178.176:8200) 
+ - HAProxy via **name**: [http://vault.tld.local:60100/](http://vault.tld.local:60100/) - OR **direct** - [http://192.168.178.199:60100](http://192.168.178.199:60100)
+ - Vault UI via **LB**: [http://vault.tld.local](http://vault.tld.local:60100/) - OR **direct w/o LB** [http://192.168.178.176:8200](http://192.168.178.176:8200) 
 
-HTTPS should also work and is ready to be enabled on Vault (if needed).
+Review HAProxy configuration & observer the HAProxy Stats page while performing some destructive actions to one of the Vault nodes.
+
+![Browser with HAProxy stats page](./a_screenshot_haproxy.png)
 
 
 ```
-          xFF_IP1      xFF_IP2  
-          🌍           🌍       
-      💻--||--     💻--||--     
-  ...    / \  ...     / \  ...
-  ________________________________________
-            TLS    ╲        ╲ 
-     connections    ╲        ╲
+          🌍 VAULT_USER
+      💻--||--     WAN / INTERNET
+  ...    / \  ... ▒
+  ________________▒___________________________
+     API (80,443)  ╲       RPC (disabled)
+                    ╲    ╲     monitoring only 
                       ╔╦══════════════╦.199
                       ║ load-balancer  ║
       backend         ║   (haproxy)    ║
   ,=============.     ╚╩══════════════╩╝
   |   servers   |             ║
   |.-----------.|             ▼
-  || v1, v2, … || ◄ ════ ◄ ═══╝
+  || v1 v2 v3  || ◄ ════ ◄ ═══╝
   |'-----------'|
-  |||||||||||||||
-  |=============|
+  |||||||||||||||.176, .175, .174, ...
+  |=============|- LAN: RPC & API / 8200+8201
    v1 = vault1, etc...
 ```
 
@@ -38,61 +39,29 @@ HTTPS should also work and is ready to be enabled on Vault (if needed).
 ## Quick setup
 
 ```bash
-# // ON LOCAL-MACHINE - add LB HOST / IP entry
-printf "192.168.178.199 vault.somewhere.local\n" | sudo tee -a /etc/hosts ;
+# // ON YOUR LOCAL-MACHINE - add LB HOST / Vault entries via LB
+printf "192.168.178.199 vault.tld.local\n192.168.178.199 vault1.tld.local\n192.168.178.199 vault2.tld.local\n192.168.178.199 vault3.tld.local\n" | sudo tee -a /etc/hosts ;
 
 vagrant up ;
-```
 
+# // open HAProxy stats page linked earlier & observe while performing:
 
-### 1. **Bug / Issue** - X-Forwarded-For is neglected & has no effect
+vagrant ssh dc1-vault2 ;
 
-```bash
-vagrant ssh haproxy ;
 # vagrant@haproxy:~$ \
-sudo tcpdump -q -A -i eth1 dst 'port 8200' ;
-  # // ^^ for seeing outgoing x-forwarded-for VS its on health checks without it.
+sudo service vault stop && exit ;
 
-vagrant ssh haproxy ;
-# vagrant@haproxy:~$ \
-cat vault_init.json
-  # // ^^ VAULT TOKEN
+# // locally perform:
+curl -v vault.tld.local ;  # // still works as expected
+curl -v vault2.tld.local ;  # // and you can still target the bad node
 
-# // ON LOCAL-MACHINE - try VAULT STATUS
-VAULT_ADDR=http://192.168.178.176:8200 vault status ;
-  # // ^^ get a response - when we should NOT.
-
-# // ON LOCAL-MACHINE - try LB Address via browser & also you get a response:
-http://192.168.178.199  # OPEN IN BROWSER
+# // when done delete VM's & boxes:
+vagrant destroy -f haproxy dc1-vault1 dc1-vault2 dc1-vault3
+vagrant box remove -f debian/buster64 --provider virtualbox ; # ... delete box images
 ```
 
 
-### 2. **Feature / Enhancement** - Rate limiting (global or otherwise) NOT using X-Forwarded-For
-
-```bash
-# // From a few (two to four) differing IPs execute similar request at the same time concurrently:
-printf "192.168.178.199 vault.somewhere.local\n" | sudo tee -a /etc/hosts ;
-export VAULT_ADDR=http://vault.somewhere.local VAULT_TOKEN='………' ;
-
-# // from SOURCE-1 IP approach Vault via its LB:
-curl -X PUT -H "X-Vault-Token: ${VAULT_TOKEN}" -d '{"data":{"value":"………"}}' ${VAULT_ADDR}/v1/kv/data/test ;
-# // ^^ repeat from another host at the same time:
-
-# // from SOURCE-2 IP approach Vault via its LB:
-curl -X PUT -H "X-Vault-Token: ${VAULT_TOKEN}" -d '{"data":{"value":"………"}}' ${VAULT_ADDR}/v1/kv/data/test ;
-```
-
-
-### 3. **Feature / Enhancement** - X-Forwarded-For support in in Audit Logs instead of remote_address IP being static.
-
-```bash
-sudo jq -r '.request.remote_address' /vaudit.log
-  # ………
-  # 192.168.178.199
-  # 192.168.178.199
-  # 192.168.178.199
-  # ^^ all the same or own bind ip.
-```
-
+## Notes
+RPC routing via HAProxy has been intentionally left out and if you're wanting to complete this then consider seperated listener / backends per node bound by their DNS equivalent so as to properly direct to targetted hosts that may otherwise not be possible when dealing with TCP/IP connections.
 
 ------

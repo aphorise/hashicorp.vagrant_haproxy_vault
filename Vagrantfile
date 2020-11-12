@@ -10,7 +10,7 @@ sHOME="/home/#{sVUSER}"  # // home path for vagrant user
 sPTH='cc.os.user-input'  # // path where scripts are expected
 sCA_CERT='cacert.crt'  # // Root CA certificate.
 
-iCLUSTERA_N = 1  # // Vault A INSTANCES UP TO 9 <= iN > 0
+iCLUSTERA_N = 3  # // Vault A INSTANCES UP TO 9 <= iN > 0
 iCLUSTERA_C = 0  # // Consul B INSTANCES UP TO 9 <= iN > 0
 bCLUSTERA_CONSUL = false  # // Consul A use Consul as store for vault?
 CLUSTERA_VAULT_NAME = 'dc1'  # // Vault A Cluster Name
@@ -29,7 +29,8 @@ aCLUSTERA_FILES =  # // Cluster A files to copy to instances
 	"vault_files/."  # "vault_files/vault_seal.hcl", "vault_files/vault_license.txt"  ## // for individual files
 ];
 VV1=''  # 'VAULT_VERSION='+'1.5.0+ent.hsm'  # VV1='' to Install Latest OSS
-VR1=''  # "VAULT_RAFT_JOIN=https://#{sCLUSTERA_sIP_VAULT_LEADER}:8200"  # raft join script determines applicability
+# raft join script determines applicability
+if bCLUSTERA_CONSUL then VR1='' ; else VR1="VAULT_RAFT_JOIN=http://#{sCLUSTERA_sIP_VAULT_LEADER}:8200" ; end
 
 sERROR_MSG_CONSUL="CONSUL Node count can NOT be zero (0). Set to: 3, 5, 7 , 11, etc."
 
@@ -113,6 +114,10 @@ su -l #{sVUSER} -c \"rsync -qva --rsh='ssh -i #{sHOME}/.ssh/id_rsa2' #{sVUSER}@#
 SCRIPT
 			vault_node.vm.provision "shell", inline: $script
 
+#			if iX > 1 then
+#			end
+
+
 			# // ORDERED: setup certs.
 			vault_node.vm.provision "file", source: "#{sPTH}/3.install_tls_ca_certs.sh", destination: "#{sHOME}/install_tls_ca_certs.sh"
 			vault_node.vm.provision "shell", inline: "/bin/bash -c '#{sHOME}/install_tls_ca_certs.sh'"
@@ -126,7 +131,12 @@ SCRIPT
 
 			# // ORDERED: copy VAULT TOKEN to .bashrc for convenience from main node after setup.
 			if iX > 1 then
-				vault_node.vm.provision "shell", inline: "su -l #{sVUSER} -c 'ssh-keyscan #{sCLUSTERA_sIP_VAULT_LEADER} 2>/dev/null >> #{sHOME}/.ssh/known_hosts ; VT=$(ssh -i #{sHOME}/.ssh/id_rsa2 #{sVUSER}@#{sCLUSTERA_sIP_VAULT_LEADER} \"[[ -f /home/vagrant/vault_token.txt ]] && cat /home/vagrant/vault_token.txt || printf \'\'\"); if ! [[ ${VT} == \"\" ]] && ! grep VAULT_TOKEN ~/.bashrc ; then printf \"export VAULT_TOKEN=${VT}\n\" >> ~/.bashrc ; fi ;'"
+				vault_node.vm.provision "file", source: ".vagrant/machines/dc1-vault1/virtualbox/private_key", destination: "#{sHOME}/.ssh/id_rsa3"
+				vault_node.vm.provision "shell", inline: "su -l #{sVUSER} -c 'ssh-keyscan #{sCLUSTERA_sIP_VAULT_LEADER} 2>/dev/null >> #{sHOME}/.ssh/known_hosts ; VT=$(ssh -i #{sHOME}/.ssh/id_rsa3 #{sVUSER}@#{sCLUSTERA_sIP_VAULT_LEADER} \"[[ -f /home/vagrant/vault_token.txt ]] && cat /home/vagrant/vault_token.txt || printf \'\'\"); if ! [[ ${VT} == \"\" ]] && ! grep VAULT_TOKEN ~/.bashrc ; then printf \"export VAULT_TOKEN=${VT}\n\" >> ~/.bashrc ; fi ;'"
+				$script = <<-SCRIPT
+su -l #{sVUSER} -c \"rsync -qva --rsh='ssh -i #{sHOME}/.ssh/id_rsa3' #{sVUSER}@#{sCLUSTERA_sIP_VAULT_LEADER}:~/vault_init.json #{sHOME}/.\"
+SCRIPT
+				vault_node.vm.provision "shell", inline: $script
 			end
 
 			# // ORDERED: setup vault
@@ -137,7 +147,7 @@ SCRIPT
 				vault_node.vm.provision "file", source: "#{sPTH}/6.post_setup_vault.sh", destination: "#{sHOME}/post_setup_vault.sh"
 				vault_node.vm.provision "shell", inline: "/bin/bash -c '#{VV1} TLS_ENABLE='false' VAULT_CLUSTER_NAME='#{CLUSTERA_VAULT_NAME}' USER='#{sVUSER}' #{sHOME}/install_vault.sh'"
 			else
-				vault_node.vm.provision "shell", inline: "/bin/bash -c '#{VV1} #{VR1} TLS_ENABLE='false VAULT_CLUSTER_NAME='#{CLUSTERA_VAULT_NAME}' USER='#{sVUSER}' #{sHOME}/install_vault.sh'"
+				vault_node.vm.provision "shell", inline: "/bin/bash -c '#{VV1} #{VR1} TLS_ENABLE='false' VAULT_CLUSTER_NAME='#{CLUSTERA_VAULT_NAME}' USER='#{sVUSER}' #{sHOME}/install_vault.sh'"
 			end
 
 			# // DESTROY ACTION - need to perform raft peer remove if its not the last node:

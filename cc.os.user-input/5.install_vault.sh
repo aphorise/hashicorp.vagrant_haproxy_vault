@@ -505,7 +505,6 @@ function vaultInitSetup()
 		fi ;
 	fi ;
 	# // .....
-
 	# // where token file exists then set it in .bashrc and maybe delete after.
 	if [[ -s ${VAULT_TOKEN_INIT} ]] ; then
 		VAULT_TOKEN=$(< ${VAULT_TOKEN_INIT}) ;
@@ -517,12 +516,11 @@ function vaultInitSetup()
 		fi ;
 		# rm -rf ${VAULT_TOKEN_INIT} ;
 	fi ;
-
 	if [[ ! ${VAULT_TOKEN+x} && -s ${VAULT_INIT_FILE} ]] ; then
 		VAULT_TOKEN=$(jq -r '.root_token' ${VAULT_INIT_FILE}) ;
 	fi ;
 
-	if [[ ${VAULT_TOKEN} == "" ]] ; then
+	if [[ !${VAULT_TOKEN+x} || ${VAULT_TOKEN} == "" ]] ; then
 		# // VAULT_TOKEN ought to exist by now from either init or copy from vault1:
 		VAULT_TOKEN=$(grep -F VAULT_TOKEN ${HOME_PATH}/.bashrc | cut -d'=' -f2) ;
 	fi ;
@@ -554,9 +552,17 @@ function vaultInitSetup()
 			pOUT 'RAFT: Attempting to join.' ;
 			sleep 1 ;
 			set +e ;
-			VAULT_TOKEN=${VAULT_TOKEN} VAULT_ADDR=${VAULT_API_ADDR} vault operator raft join ${VAULT_RAFT_JOIN} > /dev/null 2>&1 ;
+			VAULT_TOKEN=${VAULT_TOKEN} VAULT_ADDR=${VAULT_API_ADDR} vault operator raft join ${VAULT_RAFT_JOIN} 2>&1 > /dev/null ;
 			if (($? == 0)) ; then
 				pOUT "RAFT: SUCCESS JOINED ${VAULT_NODENAME} to ${VAULT_RAFT_JOIN}." ;
+
+				if [[ -s ${VAULT_INIT_FILE} && ${VSEAL_TATUS[2]} == "0" ]] ; then
+					pOUT 'VAULT UNSEAL: Attempting Unseal using UNSEAL KEYS from Leader Node (vault_init.json).' ;
+					VAULT_TOKEN=$(jq -r '.root_token' ${VAULT_INIT_FILE}) ;
+					VAULT_TOKEN=${VAULT_TOKEN} vault operator unseal $(jq -r '.unseal_keys_b64[0]' ${VAULT_INIT_FILE}) ;
+				#else printf 'VAULT: NO UNSEAL ACTIONS TAKEN.\n' ;
+				fi ;
+
 			else
 				pERR "--ERROR: Vault RAFT unable to join ${VAULT_NODENAME} to ${VAULT_RAFT_JOIN}." ;
 			fi ;

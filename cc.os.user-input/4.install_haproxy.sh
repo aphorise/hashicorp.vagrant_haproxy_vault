@@ -74,13 +74,14 @@ defaults
 #//--------------------------------
 
 # // HAProxy peers
-# peer lb1 37.48.93.65:1024
-# peer lb2 37.48.93.77:1024
+# peer lb1 1.2.3.4:1024
+# peer lb2 2.3.4.5:1024
 #//--------------------------------
 
 frontend inwebs_https
 # HTTP all traffic to HTTPS
  #redirect scheme https if !{ ssl_fc }
+# bind *:8200  # // disabled as 8200 LAN should be routing for nodes in cluster fine
  bind *:80
  bind *:443 ssl crt /usr/lib/ssl/haproxy_cert.pem ca-file /usr/lib/ssl/cacert.crt
  #bind *:443 verify required ssl crt /usr/lib/ssl/haproxy_cert.pem ca-file /usr/lib/ssl/cacert.crt
@@ -91,10 +92,17 @@ frontend inwebs_https
  capture request header User-Agent len 8192
  capture request header Accept-language len 64
  #//check for host header is present with the right target
- acl url_VAULT hdr(host) -i vault.somewhere.local
- use_backend DC1_VAULT_PRIMARY_API if url_VAULT
+ acl url_VAULT hdr(host) -i vault.tld.local
+ acl url_VAULT_DIRECT hdr(host) -i vault1.tld.local vault2.tld.local vault3.tld.local
+ use_backend DC1_VAULT_PRIMARY_API if url_VAULT url_VAULT_DIRECT
  default_backend UFO
 #//--------------------------------
+
+#frontend inwebs_rpc
+# mode tcp
+# bind *:8201
+# log-format %ci:%cp\ [%t]\ %ft\ %b/%s\ %Tw/%Tc/%Tt\ %B\ %ts\ %ac/%fc/%bc/%sc/%rc\ %sq/%bq
+# use_backend DC1_VAULT_PRIMARY_RPC
 
 backend UFO
  http-request deny deny_status 200
@@ -106,16 +114,23 @@ backend UFO
 backend DC1_VAULT_PRIMARY_API
  #stick-table type ip size 20k
  #stick on src
- option forwardfor
- http-send-name-header Host
- http-check expect status 307
  #http-request add-header X-Forwarded-Proto https if { ssl_fc }  # optional but can be handy
- # // query-string: ?vault=1 to target vault-server
- use-server vault1 if { urlp(vault) 1 }
+ option forwardfor
+ option persist
+ http-send-name-header Host
+ #http-check expect status 307  # // default vault response with basic check
+ http-check expect status 400 rstring {"errors":["missing client token"]}
+ option httpchk GET /v1/kv/data/health-check HTTP/1.1
+ # // based on host header target vault-server
+ use-server vault1 if { req.hdr(host) vault1.tld.local }
  server vault1 192.168.178.176:8200 check
- #use-server vault2 if { urlp(vault) 2 }
- #server vault2 192.168.178.175:8200 check
- # ^^ adjust or put others as needed.
+ use-server vault2 if { req.hdr(host) vault2.tld.local }
+ server vault2 192.168.178.175:8200 check
+ use-server vault1 if { req.hdr(host) vault3.tld.local }
+ server vault3 192.168.178.174:8200 check
+ # // ^^ adjust or put others as needed.
+ # // for a per target response 
+ # http-request return 503 content-type text/plain string "down" if { req.hdr(host) vault1.tld.local } !{ serv_is_up(DC1_VAULT_PRIMARY_API/vault1) }
 #//--------------------------------
 
 backend DC1_VAULT_PRIMARY_RPC
@@ -141,7 +156,7 @@ listen haadmin
  stats hide-version
  stats refresh 4
  stats show-desc Vault (LB)
- stats realm   Vault Load-Balancer
+ stats realm  Vault Load-Balancer
 ''' > /etc/haproxy/haproxy.cfg ;
 
 sudo service haproxy restart > /dev/null ;
